@@ -4,6 +4,7 @@ use serde_json::{Value};
 use std::rc::Rc;
 
 pub mod memmq;
+pub mod mq;
 
 pub enum Result {
     Ok,

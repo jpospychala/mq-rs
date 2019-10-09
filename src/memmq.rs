@@ -2,7 +2,6 @@ extern crate serde_json;
 
 use serde_json::{Value};
 use std::collections::HashMap;
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::{Listener, MQ, FakeMQ};
@@ -53,6 +52,7 @@ impl FakeMQ for MemMQ {
 #[cfg(test)]
 mod tests {
 
+    use std::cell::RefCell;
     use super::*;
     use serde_json::*;
 

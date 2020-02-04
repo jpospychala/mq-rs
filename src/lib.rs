@@ -7,19 +7,20 @@ pub mod memmq;
 pub mod mq;
 
 pub enum Result {
-    Ok,
-    Err,
+  Ok,
+  Err,
 }
 
 pub type Listener = dyn Fn(&Value) -> Result;
 
 pub trait MQ {
-    fn bind(&mut self, routing_key: &str, cb: Rc<Listener>);
-    fn publish(&mut self, routing_key: &str, body: Value);
+  fn bind(&mut self, routing_key: &str, cb: Rc<Listener>);
+  fn publish(&mut self, routing_key: &str, body: Value);
+  fn ready(&mut self);
 }
 
 pub trait FakeMQ {
-    fn having_incoming(&self, routing_key: &str, body: Value);
-    fn has_published(&mut self, routing_key: &str) -> Vec<&Value>;
-    fn reset(&mut self);
+  fn having_incoming(&self, routing_key: &str, body: Value);
+  fn has_published(&mut self, routing_key: &str) -> Vec<&Value>;
+  fn reset(&mut self);
 }

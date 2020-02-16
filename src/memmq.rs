@@ -2,26 +2,17 @@ extern crate serde_json;
 
 use serde_json::{Value};
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::{Listener, MQ, FakeMQ};
 
+#[derive(Default)]
 pub struct MemMQ {
-  bindings: HashMap<String, Rc<Listener>>,
+  bindings: HashMap<String, Listener>,
   published_events: Vec<(String, Value)>,
 }
 
-impl MemMQ {
-  pub fn new() -> MemMQ {
-    MemMQ{
-      bindings: HashMap::new(),
-      published_events: vec![]
-    }
-  }
-}
-
 impl MQ for MemMQ {
-  fn bind(&mut self, routing_key: &str, cb: Rc<Listener>) {
+  fn bind(&mut self, routing_key: &str, cb: Listener) {
     self.bindings.insert(routing_key.to_string(), cb);
   }
 
@@ -34,8 +25,8 @@ impl MQ for MemMQ {
 
 impl FakeMQ for MemMQ {
   fn having_incoming(&self, routing_key: &str, body: Value) {
-    for binding in self.bindings.get(routing_key) {
-      binding(&body);
+    if let Some(binding) = self.bindings.get(routing_key) {
+      binding(body);
     }
   }
 
@@ -66,17 +57,18 @@ mod tests {
 
     assert_eq!(mq.has_published("event.a"), vec![&json!(null)])
   }
-  
+
   #[test]
   fn bind_hooks_listener_to_call_with_event() {
     let mut mq = MemMQ::new();
-    let called = Rc::new(RefCell::new(None));
+    let called: RefCell<Option<Value>> = RefCell::new(None);
     let called_in_cb = called.clone();
-    let listener = move |v: &Value| -> crate::Result {
-      called_in_cb.replace(Some(v.clone()));
+    let listener: Listener = Box::new(move |v: Value| -> crate::Result {
+      let cloned = v.clone();
+      called_in_cb.replace(Some(cloned));
       crate::Result::Ok
-    };
-    mq.bind("event.a", Rc::new(listener));
+    });
+    mq.bind("event.a", listener);
     mq.having_incoming("event.a", json!({"prop": true}));
     assert_eq!(*(called.borrow()), Some(json!({"prop": true})));
   }

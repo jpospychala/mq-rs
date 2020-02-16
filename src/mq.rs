@@ -7,34 +7,43 @@ use amqp::protocol::basic;
 use amqp::TableEntry;
 use serde_json::{Value};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::{Listener, MQ};
 
 pub struct RMQ {
   module_name: String,
   channel: Channel,
-  bindings: HashMap<String, Rc<Listener>>,
+  bindings: Arc<HashMap<String, Listener>>,
 }
 
 impl RMQ {
   pub fn new(name: &str) -> RMQ {
     let mut session = Session::open_url("amqp://localhost//").unwrap();
 
-    let channel = session.open_channel(1).unwrap();
+    let mut channel = session.open_channel(1).unwrap();
+
     let module_name = name.to_string();
+
+    let queue_builder = QueueBuilder::named(module_name.to_string()).auto_delete().exclusive();
+    let _queue_declare = queue_builder.declare(&mut channel);
+
+    // TODO create queue on first bind call
+    let events_queue = format!("{}:events", module_name);
+    let queue_builder = QueueBuilder::named(events_queue).durable();
+    let _queue_declare = queue_builder.declare(&mut channel);
 
     RMQ{
       module_name,
       channel,
-      bindings: HashMap::new(),
+      bindings: Arc::new(HashMap::new()),
     }
   }
 }
 
 impl MQ for RMQ {
-  fn bind(&mut self, routing_key: &str, cb: Rc<Listener>) {
-    self.bindings.insert(routing_key.to_string(), cb);
+  fn bind(&mut self, routing_key: &str, cb: Listener) {
+    Arc::get_mut(&mut self.bindings).unwrap().insert(routing_key.to_string(), cb);
     let events_queue = format!("{}:events", self.module_name);
     let _qb = self.channel.queue_bind(events_queue, "amq.topic".to_string(), routing_key.to_string(), false, Table::new());
   }
@@ -55,48 +64,44 @@ impl MQ for RMQ {
 
   fn ready(&mut self) {
     let module_name = self.module_name.clone();
+
     let closure_consumer = move |_chan: &mut Channel, _deliver: basic::Deliver, headers: basic::BasicProperties, data: Vec<u8>|
     {
       let body = String::from_utf8(data).unwrap();
       if let Some(headers) = headers.headers {
         let table_entry = headers.get("reply_to").unwrap();
-        match table_entry {
-          TableEntry::LongString(s) => {
-            if body == "PING" {
-              _chan.basic_publish(
-                "direct",
-                s,
-                true,
-                false,
-                protocol::basic::BasicProperties{
-                  content_type: Some("text".to_string()),
-                  ..Default::default()
-                },
-                module_name.as_bytes().to_vec()
-              ).unwrap();
-            } else {
-              // TODO query response
-            }
+        if let TableEntry::LongString(s) = table_entry {
+          if body == "PING" {
+            _chan.basic_publish(
+              "direct",
+              s,
+              true,
+              false,
+              protocol::basic::BasicProperties{
+                content_type: Some("text".to_string()),
+                ..Default::default()
+              },
+              module_name.as_bytes().to_vec()
+            ).unwrap();
+          } else {
+            // TODO query response
           }
-          _ => {}
         }
       }
       println!("Consumed");
     };
 
-    let queue_builder = QueueBuilder::named(self.module_name.to_string()).auto_delete().exclusive();
-    let _queue_declare = queue_builder.declare(&mut self.channel);
-    let cons1 = self.channel.basic_consume(closure_consumer, &self.module_name, &"".to_string(), false, true, true, false, Table::new());
+    let _cons1 = self.channel.basic_consume(closure_consumer, &self.module_name, &"".to_string(), false, true, true, false, Table::new());
 
-    let event_consumer = move |_chan: &mut Channel, deliver: basic::Deliver, headers: basic::BasicProperties, data: Vec<u8>|
+    let bindings_clone: Arc<HashMap<String, Listener>> = Arc::clone(&self.bindings);
+    let event_consumer = move |_chan: &mut Channel, deliver: basic::Deliver, _headers: basic::BasicProperties, data: Vec<u8>|
     {
       let v: Value = serde_json::from_slice(&data[..]).unwrap();
-      let bindings_mut = &bindings_clone;
-      if let Some(binding) = bindings_mut.get("") { // TODO how to steal self into closure?
-        // binding(&v);
+      if let Some(binding) = bindings_clone.get(&deliver.routing_key) { // TODO how to steal self into closure?
+        binding(v);
       }
       // println!("[closure] Deliver info: {:?}", deliver);
-      println!("[closure] Content headers: {:?}", headers);
+      // println!("[closure] Content headers: {:?}", headers);
       // println!("[closure] Content body: {:?}", data);
       // println!("[function] Content body(as string): {:?}", String::from_utf8(data));
 
@@ -105,16 +110,26 @@ impl MQ for RMQ {
     let events_queue = format!("{}:events", self.module_name);
     let queue_builder = QueueBuilder::named(events_queue.to_string()).durable();
     let _queue_declare = queue_builder.declare(&mut self.channel);
-    let cons2 = self.channel.basic_consume(event_consumer, events_queue, "".to_string(), false, false, false, false, Table::new());
-
-
-    println!("Starting consumer {:?} {:?}", cons1, cons2);
+    let _cons2 = self.channel.basic_consume(event_consumer, events_queue, "".to_string(), false, false, false, false, Table::new());
 
     // self.channel.basic_prefetch(1).ok().expect("Failed to prefetch"); // TODO parametrize prefetch
     self.channel.start_consuming();
   }
 }
 
+/*
+impl amqp::Consumer for RMQ {
+  fn handle_delivery(&mut self, channel: &mut Channel, deliver: protocol::basic::Deliver, headers: protocol::basic::BasicProperties, body: Vec<u8>){
+    // println!("[struct] Got a delivery # {}", self.deliveries_number);
+    println!("[struct] Deliver info: {:?}", deliver);
+    println!("[struct] Content headers: {:?}", headers);
+    println!("[struct] Content body: {:?}", body);
+    println!("[struct] Content body(as string): {:?}", String::from_utf8(body));
+    // DO SOME JOB:
+    // self.deliveries_number += 1;
+    channel.basic_ack(deliver.delivery_tag, false).unwrap();
+  }
+}*/
 
 #[cfg(test)]
 mod tests {
@@ -127,12 +142,12 @@ mod tests {
     let mut mq = RMQ::new("test_module");
     let body = json!({"hello": "from rust"});
 
-    let listener = move |_v: &Value| -> crate::Result {
+    let listener = Box::new(move |_v: Value| -> crate::Result {
       println!("Received event!");
       crate::Result::Ok
-    };
+    });
 
-    mq.bind("event.a", Rc::new(listener));
+    mq.bind("event.a", listener);
     mq.publish("event.a", body);
 
     mq.ready();

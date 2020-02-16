@@ -1,7 +1,6 @@
 extern crate mq_rs;
 extern crate serde_json;
 
-use std::rc::Rc;
 use serde_json::{Value, json};
 
 use mq_rs::mq::RMQ;
@@ -12,12 +11,12 @@ fn main() {
   let mut mq = RMQ::new("test_module");
   let body = json!({"hello": "from rust"});
 
-  let listener = move |v: &Value| -> Result {
-    println!("Received event!");
+  let listener = Box::new(move |v: Value| -> Result {
+    println!("Received event! {}", v);
     Result::Ok
-  };
-  
-  mq.bind("event.a", Rc::new(listener));
+  });
+
+  mq.bind("event.a", listener);
   mq.publish("event.a", body);
 
   mq.ready();

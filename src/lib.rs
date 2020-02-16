@@ -1,7 +1,6 @@
 extern crate serde_json;
 
 use serde_json::{Value};
-use std::rc::Rc;
 
 pub mod memmq;
 pub mod mq;
@@ -11,10 +10,10 @@ pub enum Result {
   Err,
 }
 
-pub type Listener = dyn Fn(&Value) -> Result;
+pub type Listener = Box<dyn Fn(Value) -> Result + Send + Sync>;
 
 pub trait MQ {
-  fn bind(&mut self, routing_key: &str, cb: Rc<Listener>);
+  fn bind(&mut self, routing_key: &str, cb: Listener);
   fn publish(&mut self, routing_key: &str, body: Value);
   fn ready(&mut self);
 }

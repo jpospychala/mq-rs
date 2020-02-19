@@ -10,7 +10,7 @@ pub enum Result {
   Err,
 }
 
-pub type Listener = Box<dyn Fn(Value) -> Result + Send + Sync>;
+pub type Listener = Box<dyn FnMut(Value) -> Result + Send + Sync>;
 
 pub trait MQ {
   fn bind(&mut self, routing_key: &str, cb: Listener);
@@ -19,7 +19,7 @@ pub trait MQ {
 }
 
 pub trait FakeMQ {
-  fn having_incoming(&self, routing_key: &str, body: Value);
+  fn having_incoming(&mut self, routing_key: &str, body: Value);
   fn has_published(&mut self, routing_key: &str) -> Vec<&Value>;
   fn reset(&mut self);
 }

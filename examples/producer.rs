@@ -7,7 +7,7 @@ use mq_rs::mq::RMQ;
 use mq_rs::MQ;
 
 fn main() {
-  let mut mq = RMQ::new("test_module");
+  let mut mq = RMQ::new("test_module").unwrap();
   loop {
     let body = json!({"hello": "from rust"});
     mq.publish("event.a", body);

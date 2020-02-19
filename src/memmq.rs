@@ -5,10 +5,18 @@ use std::collections::HashMap;
 
 use crate::{Listener, MQ, FakeMQ};
 
-#[derive(Default)]
 pub struct MemMQ {
   bindings: HashMap<String, Listener>,
   published_events: Vec<(String, Value)>,
+}
+
+impl MemMQ {
+  pub fn new() -> MemMQ {
+    MemMQ {
+      bindings: HashMap::new(),
+      published_events: vec![],
+    }
+  }
 }
 
 impl MQ for MemMQ {
@@ -24,8 +32,8 @@ impl MQ for MemMQ {
 }
 
 impl FakeMQ for MemMQ {
-  fn having_incoming(&self, routing_key: &str, body: Value) {
-    if let Some(binding) = self.bindings.get(routing_key) {
+  fn having_incoming(&mut self, routing_key: &str, body: Value) {
+    if let Some(binding) = self.bindings.get_mut(routing_key) {
       binding(body);
     }
   }
@@ -45,9 +53,9 @@ impl FakeMQ for MemMQ {
 #[cfg(test)]
 mod tests {
 
-  use std::cell::RefCell;
   use super::*;
   use serde_json::*;
+  use std::sync::{Arc, Mutex};
 
   #[test]
   fn finds_published_event() {
@@ -61,15 +69,18 @@ mod tests {
   #[test]
   fn bind_hooks_listener_to_call_with_event() {
     let mut mq = MemMQ::new();
-    let called: RefCell<Option<Value>> = RefCell::new(None);
+    let called: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
     let called_in_cb = called.clone();
     let listener: Listener = Box::new(move |v: Value| -> crate::Result {
       let cloned = v.clone();
-      called_in_cb.replace(Some(cloned));
+      let mut lock = called_in_cb.try_lock();
+      if let Ok(ref mut called_in_cb) = lock {
+        **called_in_cb = Some(cloned);
+      }
       crate::Result::Ok
     });
     mq.bind("event.a", listener);
     mq.having_incoming("event.a", json!({"prop": true}));
-    assert_eq!(*(called.borrow()), Some(json!({"prop": true})));
+    assert_eq!(*called.lock().unwrap(), Some(json!({"prop": true})));
   }
 }

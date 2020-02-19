@@ -8,7 +8,7 @@ use mq_rs::MQ;
 use mq_rs::Result;
 
 fn main() {
-  let mut mq = RMQ::new("test_module");
+  let mut mq = RMQ::new("test_module").unwrap();
   let body = json!({"hello": "from rust"});
 
   let listener = Box::new(move |v: Value| -> Result {

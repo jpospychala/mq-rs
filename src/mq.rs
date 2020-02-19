@@ -2,26 +2,31 @@ extern crate serde_json;
 extern crate amqp;
 
 use amqp::{Session, Basic, Channel, Table, protocol};
-use amqp::QueueBuilder;
+use amqp::{QueueBuilder, TableEntry, AMQPError};
 use amqp::protocol::basic;
-use amqp::TableEntry;
 use serde_json::{Value};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::result::Result;
 
 use crate::{Listener, MQ};
 
 pub struct RMQ {
   module_name: String,
   channel: Channel,
-  bindings: Arc<HashMap<String, Listener>>,
+  bindings: Arc<Mutex<HashMap<String, Listener>>>,
+}
+
+#[derive(Debug)]
+pub enum MQError {
+  AMQPErr(AMQPError)
 }
 
 impl RMQ {
-  pub fn new(name: &str) -> RMQ {
-    let mut session = Session::open_url("amqp://localhost//").unwrap();
+  pub fn new(name: &str) -> Result<RMQ, MQError> {
+    let mut session = Session::open_url("amqp://localhost//")?;
 
-    let mut channel = session.open_channel(1).unwrap();
+    let mut channel = session.open_channel(1)?;
 
     let module_name = name.to_string();
 
@@ -33,17 +38,18 @@ impl RMQ {
     let queue_builder = QueueBuilder::named(events_queue).durable();
     let _queue_declare = queue_builder.declare(&mut channel);
 
-    RMQ{
+    Ok(RMQ{
       module_name,
       channel,
-      bindings: Arc::new(HashMap::new()),
-    }
+      bindings: Arc::new(Mutex::new(HashMap::new())),
+    })
   }
 }
 
 impl MQ for RMQ {
   fn bind(&mut self, routing_key: &str, cb: Listener) {
-    Arc::get_mut(&mut self.bindings).unwrap().insert(routing_key.to_string(), cb);
+    let a = Arc::get_mut(&mut self.bindings).unwrap();
+    a.lock().unwrap().insert(routing_key.to_string(), cb);
     let events_queue = format!("{}:events", self.module_name);
     let _qb = self.channel.queue_bind(events_queue, "amq.topic".to_string(), routing_key.to_string(), false, Table::new());
   }
@@ -93,13 +99,13 @@ impl MQ for RMQ {
 
     let _cons1 = self.channel.basic_consume(closure_consumer, &self.module_name, &"".to_string(), false, true, true, false, Table::new());
 
-    let bindings_clone: Arc<HashMap<String, Listener>> = Arc::clone(&self.bindings);
+    let bindings_clone: Arc<Mutex<HashMap<String, Listener>>> = Arc::clone(&self.bindings);
     let event_consumer = move |_chan: &mut Channel, deliver: basic::Deliver, _headers: basic::BasicProperties, data: Vec<u8>|
     {
       let v: Value = serde_json::from_slice(&data[..]).unwrap();
-      if let Some(binding) = bindings_clone.get(&deliver.routing_key) { // TODO how to steal self into closure?
-        binding(v);
-      }
+      let mut guard = bindings_clone.lock().unwrap();
+      let b = guard.get_mut(&deliver.routing_key).unwrap();
+      b(v);
       // println!("[closure] Deliver info: {:?}", deliver);
       // println!("[closure] Content headers: {:?}", headers);
       // println!("[closure] Content body: {:?}", data);
@@ -117,19 +123,11 @@ impl MQ for RMQ {
   }
 }
 
-/*
-impl amqp::Consumer for RMQ {
-  fn handle_delivery(&mut self, channel: &mut Channel, deliver: protocol::basic::Deliver, headers: protocol::basic::BasicProperties, body: Vec<u8>){
-    // println!("[struct] Got a delivery # {}", self.deliveries_number);
-    println!("[struct] Deliver info: {:?}", deliver);
-    println!("[struct] Content headers: {:?}", headers);
-    println!("[struct] Content body: {:?}", body);
-    println!("[struct] Content body(as string): {:?}", String::from_utf8(body));
-    // DO SOME JOB:
-    // self.deliveries_number += 1;
-    channel.basic_ack(deliver.delivery_tag, false).unwrap();
+impl From<AMQPError> for MQError {
+  fn from(error: AMQPError) -> Self {
+      MQError::AMQPErr(error)
   }
-}*/
+}
 
 #[cfg(test)]
 mod tests {
@@ -139,7 +137,7 @@ mod tests {
 
   #[test]
   fn finds_published_event() {
-    let mut mq = RMQ::new("test_module");
+    let mut mq = RMQ::new("test_module").unwrap();
     let body = json!({"hello": "from rust"});
 
     let listener = Box::new(move |_v: Value| -> crate::Result {
